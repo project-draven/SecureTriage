@@ -1130,33 +1130,51 @@ try {
         Add-Check -Category "Accounts" -Name "Baseline Accounts Present (Declared Known)" `
             -Weight 0 -HitScore 0 -Hit $true -Severity INFO `
             -Detail "Declared via -KnownAccounts: $(($baselineAccts | Select-Object -ExpandProperty Name) -join ', ')"
+    }
 
-    # Account creation events  -  Security log, requires elevation
+    # Account creation events  -  Security log, requires elevation.
+    # v3.2 had this block inside the -KnownAccounts "if" above, so without
+    # -KnownAccounts it never ran and was not reported as UNAVAILABLE either.
     if (-not $SecurityLogAccess.Accessible) {
         Add-Unavailable -Category "Accounts" -Name "Local Accounts Created in Last 30 Days" `
             -Weight 30 -Reason $SecurityLogAccess.Reason
         Write-Log "  [UNAVAIL] Account creation events: $($SecurityLogAccess.Reason)"
     } else {
-        $newAcctEvents = @(Get-WinEvent -FilterHashtable @{
-            LogName   = 'Security'
-            Id        = 4720
-            StartTime = $cutoff
-        } -ErrorAction SilentlyContinue)
-
-        Add-Check -Category "Accounts" -Name "Local Accounts Created in Last 30 Days" `
-            -Weight 30 -HitScore 30 -Hit ($newAcctEvents.Count -gt 0) -Severity HIGH `
-            -Detail "$($newAcctEvents.Count) account creation event(s)  -  verify each is legitimate"
-
-        if ($newAcctEvents.Count -gt 0) {
-            Write-Log "  [!!] $($newAcctEvents.Count) new local account(s) in last 30 days:"
-            $newAcctEvents | Select-Object -First 5 | ForEach-Object {
-                try { Write-Log "       $($_.Properties[0].Value)" } catch {}
+        # Own try/catch: a failure here must mark only this check UNAVAILABLE.
+        # The section's outer catch would also re-register the accounts check
+        # that already completed above.
+        $acctQueryOk = $true
+        try {
+            $newAcctEvents = @(Get-WinEvent -FilterHashtable @{
+                LogName   = 'Security'
+                Id        = 4720
+                StartTime = $cutoff
+            } -ErrorAction Stop)
+        } catch {
+            if ($_.FullyQualifiedErrorId -like 'NoMatchingEventsFound*') {
+                $newAcctEvents = @()
+            } else {
+                $acctQueryOk = $false
+                Add-Unavailable -Category "Accounts" -Name "Local Accounts Created in Last 30 Days" `
+                    -Weight 30 -Reason $_.Exception.Message
+                Write-Log "  [UNAVAIL] Account creation events: $_"
             }
-        } else {
-            Write-Log "  [OK] No new local accounts in last 30 days"
         }
-    }
 
+        if ($acctQueryOk) {
+            Add-Check -Category "Accounts" -Name "Local Accounts Created in Last 30 Days" `
+                -Weight 30 -HitScore 30 -Hit ($newAcctEvents.Count -gt 0) -Severity HIGH `
+                -Detail "$($newAcctEvents.Count) account creation event(s)  -  verify each is legitimate"
+
+            if ($newAcctEvents.Count -gt 0) {
+                Write-Log "  [!!] $($newAcctEvents.Count) new local account(s) in last 30 days:"
+                $newAcctEvents | Select-Object -First 5 | ForEach-Object {
+                    try { Write-Log "       $($_.Properties[0].Value)" } catch {}
+                }
+            } else {
+                Write-Log "  [OK] No new local accounts in last 30 days"
+            }
+        }
     }
 
     Write-Log "  Enabled non-default accounts:"
