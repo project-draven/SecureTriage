@@ -121,7 +121,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\SecureTriage.ps1
 | Exit | Meaning |
 |---|---|
 | 0 | Clean / low |
-| 1 | Moderate, **or** any check could not run |
+| 1 | High or moderate findings, **or** any check could not run |
 | 2 | Critical — escalate |
 | 3 | Could not start (not elevated, OS query failed, output path unwritable) |
 
