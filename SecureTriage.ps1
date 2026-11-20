@@ -1,7 +1,7 @@
 # =============================================================================
 #  SecureTriage.ps1
 #  Endpoint Security Triage  -  Ransomware Edition
-#  Version 3.2  -  RMM-agnostic / Cross-Platform Compatible
+#  Version 3.3  -  RMM-agnostic / Cross-Platform Compatible
 #
 #  Runs standalone or from any RMM (Datto, NinjaOne, ConnectWise, Kaseya, etc).
 #  No RMM-specific dependencies. Results are written to disk and signalled
@@ -54,7 +54,9 @@
 #    INCOMPLETE. A low score on an incomplete run does not mean clean.
 #
 #  Exit codes:
-#    0 = Clean/Low   1 = Moderate OR incomplete coverage   2 = High/Critical   3 = Could not run
+#    0 = Clean/Low   1 = High, Moderate OR incomplete coverage   2 = Critical
+#    3 = Could not run
+#    HIGH findings exit 1, not 2. Read summary.txt for any non-zero exit.
 # =============================================================================
 
 # [CmdletBinding()] makes this an advanced script, which means an unrecognized
@@ -249,7 +251,7 @@ function Test-EventLogAccess {
     }
 }
 
-Write-Log "SecureTriage v3.2  -  starting pre-flight checks..."
+Write-Log "SecureTriage v3.3  -  starting pre-flight checks..."
 
 $SecurityLogAccess = Test-EventLogAccess -LogName 'Security'
 $SystemLogAccess   = Test-EventLogAccess -LogName 'System'
@@ -681,7 +683,7 @@ $ScanPaths = @($ScanPaths | Where-Object { Test-Path $_ })
 # HEADER
 # =============================================================================
 Write-Log ""
-Write-Log "SecureTriage v3.2  -  Ransomware Edition"
+Write-Log "SecureTriage v3.3  -  Ransomware Edition"
 Write-Log "Host       : $HostName"
 Write-Log "OS         : $OSCaption (Build $OSBuild)"
 Write-Log "PowerShell : v$PSVer ($($PSVersionTable.PSEdition))"
@@ -2572,7 +2574,7 @@ elseif ($highCount -gt 0 -or $score -ge 30) { $exitCode = 1 }
 elseif ($unavailableCount -gt 0)            { $exitCode = 1 }
 else                                        { $exitCode = 0 }
 
-Write-Log "Exit code  : $exitCode  (0=Clean  1=Moderate or incomplete  2=Critical  3=Could not run)"
+Write-Log "Exit code  : $exitCode  (0=Clean  1=High, moderate or incomplete  2=Critical  3=Could not run)"
 
 # Guard against dot-sourcing closing the caller's session.
 if ($MyInvocation.InvocationName -eq '.') {
