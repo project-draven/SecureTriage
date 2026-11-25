@@ -66,6 +66,8 @@ Three distinct ones turned up in this codebase, all producing the same outcome â
 
 Different mechanisms, one pattern. Worth looking for in any tool whose output someone will act on.
 
+Two more turned up in v3.2: a noise filter that matched every PowerShell event, and a misplaced brace that skipped the account-creation check entirely. Both checks reported PASS on every host. See [the v3.3 writeup](docs/v3.3-two-false-negatives.md).
+
 ## Service verification: signatures, not name matching
 
 Section 7 originally matched recently installed services against a vendor allow-list of names and paths. On a healthy test machine that flagged five antivirus drivers as HIGH â€” `rtp1`, `rtp2`, `rtp_elam`, `BdSentry.sys`, `KslD.sys`. None of those strings contain a vendor name.
@@ -159,7 +161,7 @@ Signature and heuristic based. It finds known tooling in known places. A compete
 
 False positives are expected on admin workstations. ProcDump, Angry IP Scanner, and WinSCP are real tools that real techs use. They're flagged for verification, not automatic escalation, and severity is calibrated accordingly.
 
-Tested end to end on Windows 11 with PowerShell 7.x. Server 2012 R2, PowerShell 5.1, domain controllers, and multi-user terminal servers have not been tested; the compatibility fallbacks for those environments exist in code and are unverified.
+Tested end to end on Windows 11 with PowerShell 7.x and Windows PowerShell 5.1, and running in production through an RMM since v3.3. Windows Server, domain controllers, and multi-user terminal servers have not been tested end to end; the compatibility fallbacks for those environments exist in code and are unverified.
 
 ## License
 
