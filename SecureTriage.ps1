@@ -673,6 +673,13 @@ function Select-SuspiciousPSEvent {
     }
 }
 
+# Regex for ransomware/exfil commands in users' PSReadLine history (Section 4).
+# A function rather than an inline string so tests can check it against real
+# command lines (tests\PSHistory.Tests.ps1).
+function Get-PSHistoryExfilPattern {
+    'b2\.exe|MEGAsync|rclone|backblaze|vssadmin.*delete|wmic.*shadowcopy|Invoke-Expression|IEX[^P]|EncodedCommand|-enc |-e '
+}
+
 # Determine disk scan paths based on mode
 # Core principle: scan where attackers actually drop tools, not the whole drive.
 # Attackers use predictable staging locations. Deep app/OS folder scanning
@@ -1038,7 +1045,7 @@ if (-not $PSLogAccess.Accessible) {
 
 # PS history file check  -  all readable user profiles
 try {
-    $histHits = Search-PSHistory -Pattern 'b2\.exe|MEGAsync|rclone|backblaze|vssadmin.*delete|wmic.*shadowcopy|Invoke-Expression|IEX[^P]|EncodedCommand|-enc |-e '
+    $histHits = Search-PSHistory -Pattern (Get-PSHistoryExfilPattern)
 
     Add-Check -Category "PowerShell" -Name "Exfil/Ransomware Tool Commands in PS History" `
         -Weight 40 -HitScore 40 -Hit ($histHits.Count -gt 0) -Severity CRITICAL `
