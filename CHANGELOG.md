@@ -24,6 +24,15 @@
   matched as a whole word, which still excludes `iexplore`.
 - **PS history check missed `powershell -ec <base64>`**, a valid
   `-EncodedCommand` alias.
+- **ProcDump in a Microsoft Store alias was CRITICAL (#3).** A Store install
+  of Sysinternals creates `...\Microsoft\WindowsApps\procdump.exe`. When that
+  file is a real app execution alias owned by a Windows-verified Microsoft
+  package, it is now MEDIUM ("ProcDump Present (Verify Installation)").
+- **ProcDump in user-writable "SysInternals" folders was not reported.** v3.3
+  skipped any path containing "SysInternals" or "Program Files", including
+  `C:\Users\Public\SysInternals\` and fake "Program Files" folders. Only the
+  real Program Files roots are trusted now; other Sysinternals folders are
+  MEDIUM, or CRITICAL under Users, ProgramData, PerfLogs, Temp or AppData.
 - 4103 events with an empty "Script Name" (interactive sessions) reported the
   next context line, "Command Path =", as the event source. Detection was not
   affected; the source shown in the report was wrong.

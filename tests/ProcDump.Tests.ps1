@@ -105,3 +105,33 @@ Describe 'Section 11 ProcDump check: wiring' {
         $scriptText | Should -Match 'ProcDump Present \(Verify Installation\)'
     }
 }
+
+Describe 'Get-AppExecAliasOwner safe defaults' {
+    # The resolver reads real files and package manifests, so only its safe
+    # defaults are unit-tested: anything it cannot confirm must come back as
+    # "not an alias" or "no owner", which keeps the finding CRITICAL.
+
+    It 'does not treat a path outside WindowsApps as an alias' {
+        $r = Get-AppExecAliasOwner -Path 'C:\Users\tech\Downloads\procdump.exe'
+        $r.IsAppExecAlias | Should -BeFalse
+        $r.Package        | Should -BeNullOrEmpty
+    }
+
+    It 'does not treat a regular file in a WindowsApps folder as an alias' {
+        $dir = Join-Path $TestDrive 'Users\tech\AppData\Local\Microsoft\WindowsApps'
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+        $file = Join-Path $dir 'procdump.exe'
+        Set-Content -LiteralPath $file -Value 'not an alias'
+        $r = Get-AppExecAliasOwner -Path $file
+        $r.IsAppExecAlias | Should -BeFalse
+        $r.Package        | Should -BeNullOrEmpty
+    }
+
+    It 'returns an error instead of throwing when the file is missing' {
+        $missing = Join-Path $TestDrive 'Users\tech\AppData\Local\Microsoft\WindowsApps\missing.exe'
+        { Get-AppExecAliasOwner -Path $missing } | Should -Not -Throw
+        $r = Get-AppExecAliasOwner -Path $missing
+        $r.IsAppExecAlias | Should -BeFalse
+        $r.Error          | Should -Not -BeNullOrEmpty
+    }
+}
