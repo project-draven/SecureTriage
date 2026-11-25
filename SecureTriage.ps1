@@ -676,8 +676,16 @@ function Select-SuspiciousPSEvent {
 # Regex for ransomware/exfil commands in users' PSReadLine history (Section 4).
 # A function rather than an inline string so tests can check it against real
 # command lines (tests\PSHistory.Tests.ps1).
+#
+# v3.4 (issue #2): v3.3 matched "-e " and "-enc " anywhere, so "winget -e",
+# "docker run -e" and "-enc UTF8" were reported as CRITICAL. An encoded
+# command now has to be a powershell/pwsh launch using -e, -ec or -en...
+# followed by a base64 blob. "-EncodedCommand" still matches on its own.
+# IEX is now a whole word: v3.3's IEX[^P] (to skip iexplore) needed a
+# character after IEX, so the common "irm <url> | iex" never matched.
 function Get-PSHistoryExfilPattern {
-    'b2\.exe|MEGAsync|rclone|backblaze|vssadmin.*delete|wmic.*shadowcopy|Invoke-Expression|IEX[^P]|EncodedCommand|-enc |-e '
+    $encodedLaunch = '(powershell|pwsh)(\.exe)?\b.*[\s"'']-e(c|n[a-z]*)?\s+[A-Za-z0-9+/=]{20,}'
+    'b2\.exe|MEGAsync|rclone|backblaze|vssadmin.*delete|wmic.*shadowcopy|Invoke-Expression|\biex\b|EncodedCommand|' + $encodedLaunch
 }
 
 # Determine disk scan paths based on mode

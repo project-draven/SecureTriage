@@ -15,6 +15,15 @@
   tested with synthetic events. Same logic, no change in results.
 
 ### Fixed
+- **PS history check flagged ordinary commands as CRITICAL (#2).** `-e ` and
+  `-enc ` matched anywhere, so `winget install ... -e`, `docker run -e`,
+  `git grep -e` and `-enc UTF8` exited 2 on clean admin workstations. Encoded
+  commands now have to be a `powershell`/`pwsh` launch with a base64 argument.
+- **PS history check missed `irm <url> | iex`.** `IEX[^P]` needed a character
+  after `IEX`, so the most common download cradle never matched. `iex` is now
+  matched as a whole word, which still excludes `iexplore`.
+- **PS history check missed `powershell -ec <base64>`**, a valid
+  `-EncodedCommand` alias.
 - 4103 events with an empty "Script Name" (interactive sessions) reported the
   next context line, "Command Path =", as the event source. Detection was not
   affected; the source shown in the report was wrong.
