@@ -19,11 +19,13 @@ jobs:
         # powershell = Windows PowerShell 5.1, what most RMM agents run.
         # pwsh       = PowerShell 7.
         shell: [powershell, pwsh]
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Pester 5
-        shell: ${{ matrix.shell }}
         run: |
           $ErrorActionPreference = 'Stop'
           if ($PSVersionTable.PSVersion.Major -lt 6) {
@@ -35,7 +37,6 @@ jobs:
           Get-Module -ListAvailable Pester | Sort-Object Version -Descending | Select-Object -First 1 Name, Version
 
       - name: Run tests
-        shell: ${{ matrix.shell }}
         run: |
           $ErrorActionPreference = 'Stop'
           Import-Module Pester -MinimumVersion 5.5.0
