@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased (v3.4)
+
+### Added
+- Pester 5 test suite in `tests/`, run in CI on Windows PowerShell 5.1 and PowerShell 7.
+- Regression tests for both v3.3 false negatives, including that the
+  PowerShell check does not flag SecureTriage's own logging.
+- Structural tests: the script parses, is plain ASCII, defines every function
+  before the script body calls it, and keeps the 4720 check outside the
+  `-KnownAccounts` block.
+
+### Changed
+- Section 4 filtering moved into `Select-SuspiciousPSEvent` so it can be
+  tested with synthetic events. Same logic, no change in results.
+
+### Fixed
+- 4103 events with an empty "Script Name" (interactive sessions) reported the
+  next context line, "Command Path =", as the event source. Detection was not
+  affected; the source shown in the report was wrong.
+
 ## v3.3 (hotfix)
 
 Found through a structured code review of v3.2. Both detection bugs were
