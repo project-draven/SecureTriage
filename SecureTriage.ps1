@@ -618,6 +618,61 @@ function Get-BinarySignature {
     return $result
 }
 
+# Filter PowerShell Operational events (4103/4104) down to suspicious ones.
+# Pure function: takes event objects, returns findings, touches no system
+# state, so tests can feed it synthetic events (tests\Section4.Tests.ps1).
+#
+# v3.2 matched the filters against the full rendered .Message. Every 4104
+# message begins "Creating Scriptblock text" and every 4103 message contains
+# "Shell ID = Microsoft.PowerShell", so the exclusions removed every event and
+# the check could never fire. Match against the logged script/command text only.
+#   4104 Properties: [2] ScriptBlockText  [4] Path
+#   4103 Properties: [0] ContextInfo      [2] Payload
+function Select-SuspiciousPSEvent {
+    param(
+        [object[]]$Events = @(),
+        [string]  $SelfLeaf = ''    # file name of this script, for self-exclusion
+    )
+    $suspPattern = 'IEX\s|Invoke-Expression|DownloadString|DownloadFile|FromBase64String|-EncodedCommand|-enc\s+[A-Za-z0-9+/]{20}|WebClient.*Download|Start-BitsTransfer|VirtualAlloc|b2\.exe|MEGAsync|rclone\.exe|backblaze'
+    $safePattern = 'WindowsDefender|MpCmdRun|PSReadLine|ChocolateyInstall|winget'
+
+    foreach ($ev in $Events) {
+        if ($ev.Id -eq 4104) {
+            $text = [string]$ev.Properties[2].Value
+            $src  = [string]$ev.Properties[4].Value
+        } else {
+            $ctx  = [string]$ev.Properties[0].Value
+            # ContextInfo carries the host command line (where -enc shows up)
+            $text = "$ctx`n$([string]$ev.Properties[2].Value)"
+            # "Script Name" label is English-only; non-English hosts skip
+            # self-exclusion for 4103 (false positive, never false negative).
+            # [ \t], not \s: an empty "Script Name =" (interactive sessions) must
+            # not let the match run onto the next line ("Command Path = ...").
+            $src  = if ($ctx -match 'Script Name[ \t]*=[ \t]*(\S[^\r\n]*)') { $Matches[1].Trim() } else { '' }
+        }
+
+        # This script's own source contains every pattern above, so script block
+        # logging records it as a match. Exclude events by the file they came
+        # from (this run, or an earlier SecureTriage run from another folder),
+        # never by generic cmdlet names an attacker's code would also contain.
+        # Known limit: a malicious script named SecureTriage*.ps1 is excluded too.
+        # String split, not [IO.Path]: .NET Framework throws on characters
+        # that are illegal in paths, and log text is attacker-influenced.
+        $srcLeaf = if ($src) { ($src -split '[\\/]')[-1] } else { '' }
+        $isSelf  = $srcLeaf -and (($SelfLeaf -and $srcLeaf -eq $SelfLeaf) -or $srcLeaf -match '^SecureTriage.*\.ps1$')
+
+        if (-not $isSelf -and $text -match $suspPattern -and $text -notmatch $safePattern) {
+            $firstLine = ($text -split "`n" | Where-Object { $_.Trim() } | Select-Object -First 1)
+            [PSCustomObject]@{
+                Time    = $ev.TimeCreated
+                EventId = $ev.Id
+                Source  = $src
+                Snippet = if ($firstLine) { $firstLine.Trim().Substring(0, [math]::Min(200, $firstLine.Trim().Length)) } else { '' }
+            }
+        }
+    }
+}
+
 # Determine disk scan paths based on mode
 # Core principle: scan where attackers actually drop tools, not the whole drive.
 # Attackers use predictable staging locations. Deep app/OS folder scanning
@@ -957,51 +1012,10 @@ if (-not $PSLogAccess.Accessible) {
             if ($_.FullyQualifiedErrorId -like 'NoMatchingEventsFound*') { $psEvents = @() } else { throw }
         }
 
-        # v3.2 matched these filters against the full rendered .Message. Every
-        # 4104 message begins "Creating Scriptblock text" and every 4103 message
-        # contains "Shell ID = Microsoft.PowerShell", so the exclusions removed
-        # every event and this check could never fire. Match against the logged
-        # script/command text only.
-        #   4104 Properties: [2] ScriptBlockText  [4] Path
-        #   4103 Properties: [0] ContextInfo      [2] Payload
-        $suspPattern = 'IEX\s|Invoke-Expression|DownloadString|DownloadFile|FromBase64String|-EncodedCommand|-enc\s+[A-Za-z0-9+/]{20}|WebClient.*Download|Start-BitsTransfer|VirtualAlloc|b2\.exe|MEGAsync|rclone\.exe|backblaze'
-        $safePattern = 'WindowsDefender|MpCmdRun|PSReadLine|ChocolateyInstall|winget'
-
-        # This script's own source contains every pattern above, so script block
-        # logging records it as a match. Exclude events by the file they came
-        # from (this run, or an earlier SecureTriage run from another folder),
-        # never by generic cmdlet names an attacker's code would also contain.
-        # Known limit: a malicious script named SecureTriage*.ps1 is excluded too.
+        # Filtering logic lives in Select-SuspiciousPSEvent (core functions)
+        # so it can be tested with synthetic events.
         $selfLeaf = if ($PSCommandPath) { [IO.Path]::GetFileName($PSCommandPath) } else { '' }
-
-        $suspPS = @(foreach ($ev in $psEvents) {
-            if ($ev.Id -eq 4104) {
-                $text = [string]$ev.Properties[2].Value
-                $src  = [string]$ev.Properties[4].Value
-            } else {
-                $ctx  = [string]$ev.Properties[0].Value
-                # ContextInfo carries the host command line (where -enc shows up)
-                $text = "$ctx`n$([string]$ev.Properties[2].Value)"
-                # "Script Name" label is English-only; non-English hosts skip
-                # self-exclusion for 4103 (false positive, never false negative).
-                $src  = if ($ctx -match 'Script Name\s*=\s*(\S.*)') { $Matches[1].Trim() } else { '' }
-            }
-
-            # String split, not [IO.Path]: .NET Framework throws on characters
-            # that are illegal in paths, and log text is attacker-influenced.
-            $srcLeaf = if ($src) { ($src -split '[\\/]')[-1] } else { '' }
-            $isSelf  = $srcLeaf -and (($selfLeaf -and $srcLeaf -eq $selfLeaf) -or $srcLeaf -match '^SecureTriage.*\.ps1$')
-
-            if (-not $isSelf -and $text -match $suspPattern -and $text -notmatch $safePattern) {
-                $firstLine = ($text -split "`n" | Where-Object { $_.Trim() } | Select-Object -First 1)
-                [PSCustomObject]@{
-                    Time    = $ev.TimeCreated
-                    EventId = $ev.Id
-                    Source  = $src
-                    Snippet = if ($firstLine) { $firstLine.Trim().Substring(0, [math]::Min(200, $firstLine.Trim().Length)) } else { '' }
-                }
-            }
-        })
+        $suspPS   = @(Select-SuspiciousPSEvent -Events $psEvents -SelfLeaf $selfLeaf)
 
         Add-Check -Category "PowerShell" -Name "Suspicious PowerShell Commands in Event Log" `
             -Weight 25 -HitScore 25 -Hit ($suspPS.Count -gt 0) -Severity HIGH `
