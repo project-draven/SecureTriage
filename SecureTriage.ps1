@@ -688,6 +688,105 @@ function Get-PSHistoryExfilPattern {
     'b2\.exe|MEGAsync|rclone|backblaze|vssadmin.*delete|wmic.*shadowcopy|Invoke-Expression|\biex\b|EncodedCommand|' + $encodedLaunch
 }
 
+# Decide how serious a ProcDump binary is, from where it sits and how it got
+# there. Pure function so tests can check every rule (tests\ProcDump.Tests.ps1).
+function Get-ProcDumpSeverity {
+    param(
+        [string]  $FullName,
+        [bool]    $IsAppExecAlias     = $false,  # zero-byte Store alias in ...\Microsoft\WindowsApps
+        [string]  $AliasPackage       = '',      # package that declares the alias, if found
+        [string]  $AliasPublisher     = '',
+        [string]  $AliasSignatureKind = '',      # Store / System / Developer / Enterprise / None
+        [string[]]$ProgramFilesRoots  = @()
+    )
+    # v3.4 (issue #3). v3.3 trusted any path containing "SysInternals" or
+    # "Program Files", including folders an attacker can create anywhere, and
+    # reported a Microsoft Store alias as CRITICAL. Attackers use the genuine,
+    # Microsoft-signed ProcDump, so the binary's signature proves nothing; only
+    # where it is and how it was installed do.
+
+    # 1. Under a real Program Files root: only admins can write there.
+    foreach ($root in $ProgramFilesRoots) {
+        if (-not $root) { continue }
+        $prefix = $root.TrimEnd('\') + '\'
+        if ($FullName.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return [PSCustomObject]@{ Severity = 'PASS'; Reason = "Under $($root.TrimEnd('\')) (admin-installed)" }
+        }
+    }
+
+    # 2. A Store app alias owned by a Microsoft package that Windows verified
+    #    (Store/System). Likely legitimate, not proven: Store apps can be
+    #    installed from the command line too. Kept visible as MEDIUM.
+    if ($IsAppExecAlias -and $AliasPackage -and
+        $AliasPublisher -match '^CN=Microsoft Corporation,' -and
+        $AliasSignatureKind -in @('Store', 'System')) {
+        return [PSCustomObject]@{ Severity = 'MEDIUM'; Reason = "Microsoft Store app alias for $AliasPackage. Confirm the user installed it." }
+    }
+
+    # 3. An admin-style Sysinternals folder (C:\Tools\SysinternalsSuite) outside
+    #    user-writable areas. Visible as MEDIUM; C:\ subfolders are user-creatable.
+    $userWritable = '^[A-Za-z]:\\(Users|ProgramData|PerfLogs)\\|\\Temp\\|\\AppData\\'
+    if ($FullName -notmatch $userWritable -and $FullName -match '\\Sysinternals[^\\]*\\') {
+        return [PSCustomObject]@{ Severity = 'MEDIUM'; Reason = 'In a Sysinternals folder outside Program Files. Confirm it belongs to an admin.' }
+    }
+
+    [PSCustomObject]@{ Severity = 'CRITICAL'; Reason = 'ProcDump outside an admin-installed location' }
+}
+
+# Is this file a Microsoft Store app execution alias, and which installed
+# package declares it? Reads the file's attributes and package manifests, so
+# it is tested only for its safe defaults; the decision itself is made by
+# Get-ProcDumpSeverity. Any failure leaves the owner empty, which keeps the
+# finding CRITICAL: an unresolved alias is never trusted.
+$script:AppxAliasMap       = $null
+$script:AppxManifestErrors = 0
+function Get-AppExecAliasOwner {
+    param([string]$Path)
+    $result = [PSCustomObject]@{ IsAppExecAlias = $false; Package = ''; Publisher = ''; SignatureKind = ''; Error = '' }
+    if ($Path -notmatch '\\AppData\\Local\\Microsoft\\WindowsApps\\') { return $result }
+
+    try { $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop }
+    catch { $result.Error = "Could not read file: $($_.Exception.Message)"; return $result }
+    if (-not ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) { return $result }
+    $result.IsAppExecAlias = $true
+
+    if ($null -eq $script:AppxAliasMap) {
+        try { $pkgs = @(Get-AppxPackage -AllUsers -ErrorAction Stop) }
+        catch { $result.Error = "Get-AppxPackage failed: $($_.Exception.Message)"; return $result }
+        $map = @{}
+        foreach ($pkg in $pkgs) {
+            if (-not $pkg.InstallLocation) { continue }
+            try {
+                [xml]$xml = Get-Content -LiteralPath (Join-Path $pkg.InstallLocation 'AppxManifest.xml') -Raw -ErrorAction Stop
+                foreach ($node in $xml.SelectNodes("//*[local-name()='ExecutionAlias']")) {
+                    $alias = ([string]$node.GetAttribute('Alias')).ToLowerInvariant()
+                    if (-not $alias) { continue }
+                    if (-not $map.ContainsKey($alias)) { $map[$alias] = New-Object System.Collections.ArrayList }
+                    if (-not ($map[$alias] | Where-Object { $_.PackageFullName -eq $pkg.PackageFullName })) {
+                        [void]$map[$alias].Add($pkg)
+                    }
+                }
+            } catch {
+                # A package whose manifest cannot be read cannot vouch for an alias.
+                $script:AppxManifestErrors++
+            }
+        }
+        $script:AppxAliasMap = $map
+    }
+
+    $owners = @($script:AppxAliasMap[$item.Name.ToLowerInvariant()])
+    if ($owners.Count -eq 1 -and $owners[0]) {
+        $result.Package       = [string]$owners[0].PackageFullName
+        $result.Publisher     = [string]$owners[0].Publisher
+        $result.SignatureKind = [string]$owners[0].SignatureKind
+    } elseif ($owners.Count -gt 1) {
+        # Cannot tell which package this alias points at without parsing the
+        # reparse data, so do not trust any of them.
+        $result.Error = "$($owners.Count) installed packages declare $($item.Name)"
+    }
+    return $result
+}
+
 # Determine disk scan paths based on mode
 # Core principle: scan where attackers actually drop tools, not the whole drive.
 # Attackers use predictable staging locations. Deep app/OS folder scanning
@@ -1974,11 +2073,17 @@ try {
 # --- Credential Theft Tools ---
 try {
     $laZagneHits = @($allFoundFiles | Where-Object { $_.Name -match '^[Ll]a[Zz]agne\.exe$' })
-    $procDumpHits = @($allFoundFiles | Where-Object {
-        $_.Name -match '^procdump(64)?\.exe$' -and
-        # ProcDump in SysInternals standard path is expected for sysadmins
-        $_.FullName -notmatch 'SysInternals|Program Files'
+    # Severity rules live in Get-ProcDumpSeverity (core functions, tested).
+    $pfRoots = @($env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:ProgramW6432) | Where-Object { $_ } | Select-Object -Unique
+    $procDumpAll = @($allFoundFiles | Where-Object { $_.Name -match '^procdump(64)?\.exe$' } | ForEach-Object {
+        $owner   = Get-AppExecAliasOwner -Path $_.FullName
+        $verdict = Get-ProcDumpSeverity -FullName $_.FullName -IsAppExecAlias $owner.IsAppExecAlias `
+                       -AliasPackage $owner.Package -AliasPublisher $owner.Publisher `
+                       -AliasSignatureKind $owner.SignatureKind -ProgramFilesRoots $pfRoots
+        [PSCustomObject]@{ FullName = $_.FullName; Severity = $verdict.Severity; Reason = $verdict.Reason; ResolveError = $owner.Error }
     })
+    $procDumpHits   = @($procDumpAll | Where-Object { $_.Severity -eq 'CRITICAL' })
+    $procDumpVerify = @($procDumpAll | Where-Object { $_.Severity -eq 'MEDIUM' })
     $mimeHits = @($allFoundFiles | Where-Object {
         $_.Name -match '^(mimikatz|mimi32|mimi64|wce|fgdump|pwdump).*\.exe$'
     })
@@ -1993,6 +2098,10 @@ try {
     Add-DiskCheck -Category "CredTheft" -Name "ProcDump in Non-Standard Path (LSASS Dump Risk)" `
         -Weight 60 -HitScore 60 -Hit ($procDumpHits.Count -gt 0) -Severity CRITICAL `
         -Detail "Path(s): $(($procDumpHits | Select-Object -ExpandProperty FullName) -join '; ')  -  commonly used to dump LSASS credentials"
+
+    Add-DiskCheck -Category "CredTheft" -Name "ProcDump Present (Verify Installation)" `
+        -Weight 10 -HitScore 10 -Hit ($procDumpVerify.Count -gt 0) -Severity MEDIUM `
+        -Detail "$(($procDumpVerify | ForEach-Object { "$($_.FullName) [$($_.Reason)]" }) -join '; ')"
 
     Add-DiskCheck -Category "CredTheft" -Name "Known Credential Theft Tool Found" `
         -Weight 90 -HitScore 90 -Hit ($mimeHits.Count -gt 0) -Severity CRITICAL `
@@ -2011,19 +2120,30 @@ try {
         $laZagneHits | ForEach-Object { Write-Log "        $($_.FullName)" }
     }
     if ($procDumpHits.Count -gt 0) {
-        Write-Log "  [!!!] ProcDump outside SysInternals path"
-        $procDumpHits | ForEach-Object { Write-Log "        $($_.FullName)" }
+        Write-Log "  [!!!] ProcDump outside an admin-installed location"
+        $procDumpHits | ForEach-Object {
+            Write-Log "        $($_.FullName)"
+            if ($_.ResolveError) { Write-Log "          (Store ownership not checked: $($_.ResolveError))" }
+        }
+    }
+    if ($procDumpVerify.Count -gt 0) {
+        Write-Log "  [!] ProcDump present  -  verify it was installed on purpose:"
+        $procDumpVerify | ForEach-Object { Write-Log "        $($_.FullName)  -  $($_.Reason)" }
+    }
+    if ($script:AppxManifestErrors -gt 0) {
+        Write-Log "  [NOTE] $($script:AppxManifestErrors) package manifest(s) unreadable while checking Store aliases"
     }
     if ($lsassDumpHits.Count -gt 0) {
         Write-Log "  [!!!] LSASS dump command in PS history:"
         $lsassDumpHits | Select-Object -First 3 | ForEach-Object { Write-Log "        $_" }
     }
-    if ($mimeHits.Count -eq 0 -and $laZagneHits.Count -eq 0 -and $procDumpHits.Count -eq 0 -and $lsassDumpHits.Count -eq 0) {
+    if ($mimeHits.Count -eq 0 -and $laZagneHits.Count -eq 0 -and $procDumpHits.Count -eq 0 -and $procDumpVerify.Count -eq 0 -and $lsassDumpHits.Count -eq 0) {
         Write-Log "  [OK] No credential theft tools detected"
     }
 } catch {
     Add-Unavailable -Category "CredTheft" -Name "LaZagne Credential Harvester Found"              -Weight 80 -Reason $_.Exception.Message
     Add-Unavailable -Category "CredTheft" -Name "ProcDump in Non-Standard Path (LSASS Dump Risk)" -Weight 60 -Reason $_.Exception.Message
+    Add-Unavailable -Category "CredTheft" -Name "ProcDump Present (Verify Installation)"          -Weight 10 -Reason $_.Exception.Message
     Add-Unavailable -Category "CredTheft" -Name "Known Credential Theft Tool Found"               -Weight 90 -Reason $_.Exception.Message
     Add-Unavailable -Category "CredTheft" -Name "LSASS Dump Command in PS History"                -Weight 75 -Reason $_.Exception.Message
     Write-Log "  [UNAVAIL] Credential theft check: $_"
