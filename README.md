@@ -1,5 +1,7 @@
 # SecureTriage
 
+[![tests](https://github.com/project-draven/SecureTriage/actions/workflows/tests.yml/badge.svg)](https://github.com/project-draven/SecureTriage/actions/workflows/tests.yml)
+
 Single-file PowerShell endpoint triage for ransomware indicators. Runs from any RMM or standalone. No dependencies, no agent, no install.
 
 Built for a real problem: an MSP SOC gets an EDR alert on a client endpoint at 11pm and needs to know within five minutes whether this is a false positive or the staging phase of a ransomware deployment. Vendor consoles tell you what fired. They don't tell you what else is on the box.
@@ -148,6 +150,19 @@ C:\ProgramData\SecureTriage\SecureTriage_<HOST>_<TIMESTAMP>\
 **Scanning is targeted, not exhaustive.** Staging directories, user profile paths, temp locations. A full `C:\` crawl adds 20+ minutes for near-zero additional yield — attackers stage in predictable places. This is a triage tool, not forensic imaging.
 
 **Reparse points are skipped** so junction loops can't hang the walk.
+
+## Tests
+
+Detection logic is covered by [Pester 5](https://pester.dev) tests in `tests/`, run on every pull request on Windows under both Windows PowerShell 5.1 and PowerShell 7.
+
+The script stays a single file so it can be pasted into an RMM, which means it can't be imported without running a scan. `tests/TestHelpers.ps1` parses the script and loads only its functions, then feeds them synthetic event log records shaped like real ones. Nothing touches the host's logs, and no admin rights are needed.
+
+```powershell
+Install-Module Pester -MinimumVersion 5.5.0 -Scope CurrentUser
+Invoke-Pester -Path .\tests -Output Detailed
+```
+
+Every detection fix ships with a test that fails on the old code. The v3.2 false negatives are covered in both directions: the check fires on malicious activity, and it does not fire on SecureTriage's own logging.
 
 ## Requirements
 
