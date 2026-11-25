@@ -661,7 +661,10 @@ function Select-SuspiciousPSEvent {
         $srcLeaf = if ($src) { ($src -split '[\\/]')[-1] } else { '' }
         $isSelf  = $srcLeaf -and (($SelfLeaf -and $srcLeaf -eq $SelfLeaf) -or $srcLeaf -match '^SecureTriage.*\.ps1$')
 
-        if (-not $isSelf -and $text -match $suspPattern -and $text -notmatch $safePattern) {
+        $msg = [string]$ev.Message   # MUTATION: v3.2 filtered the rendered message
+        if (-not $isSelf -and $msg -match $suspPattern -and
+            $msg -notmatch 'Add-Type|Creating Scriptblock text|CommandInvocation\(Add-Type\)|SecureTriage|New-SecureTriage|Get-WinEvent|Get-ChildItem|ConvertTo-Json|Export-Csv|Out-File' -and
+            $msg -notmatch 'WindowsDefender|MpCmdRun|Microsoft\.PowerShell|PSReadLine|ChocolateyInstall|winget') {
             $firstLine = ($text -split "`n" | Where-Object { $_.Trim() } | Select-Object -First 1)
             [PSCustomObject]@{
                 Time    = $ev.TimeCreated
@@ -1146,7 +1149,6 @@ try {
         Add-Check -Category "Accounts" -Name "Baseline Accounts Present (Declared Known)" `
             -Weight 0 -HitScore 0 -Hit $true -Severity INFO `
             -Detail "Declared via -KnownAccounts: $(($baselineAccts | Select-Object -ExpandProperty Name) -join ', ')"
-    }
 
     # Account creation events  -  Security log, requires elevation.
     # v3.2 had this block inside the -KnownAccounts "if" above, so without
@@ -1192,6 +1194,7 @@ try {
             }
         }
     }
+    }   # MUTATION: v3.2 misplaced brace
 
     Write-Log "  Enabled non-default accounts:"
     if ($nonDefault.Count -gt 0) {
