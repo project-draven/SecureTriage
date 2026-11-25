@@ -688,6 +688,24 @@ function Get-PSHistoryExfilPattern {
     'b2\.exe|MEGAsync|rclone|backblaze|vssadmin.*delete|wmic.*shadowcopy|Invoke-Expression|\biex\b|EncodedCommand|' + $encodedLaunch
 }
 
+# Decide how serious a ProcDump binary is, from where it sits and how it got
+# there. Pure function so tests can check every rule (tests\ProcDump.Tests.ps1).
+function Get-ProcDumpSeverity {
+    param(
+        [string]  $FullName,
+        [bool]    $IsAppExecAlias     = $false,  # zero-byte Store alias in ...\Microsoft\WindowsApps
+        [string]  $AliasPackage       = '',      # package that declares the alias, if found
+        [string]  $AliasPublisher     = '',
+        [string]  $AliasSignatureKind = '',      # Store / System / Developer / Enterprise / None
+        [string[]]$ProgramFilesRoots  = @()
+    )
+    # ProcDump in SysInternals standard path is expected for sysadmins
+    if ($FullName -match 'SysInternals|Program Files') {
+        return [PSCustomObject]@{ Severity = 'PASS'; Reason = 'SysInternals or Program Files path' }
+    }
+    [PSCustomObject]@{ Severity = 'CRITICAL'; Reason = 'ProcDump outside an admin-installed location' }
+}
+
 # Determine disk scan paths based on mode
 # Core principle: scan where attackers actually drop tools, not the whole drive.
 # Attackers use predictable staging locations. Deep app/OS folder scanning
@@ -1976,8 +1994,7 @@ try {
     $laZagneHits = @($allFoundFiles | Where-Object { $_.Name -match '^[Ll]a[Zz]agne\.exe$' })
     $procDumpHits = @($allFoundFiles | Where-Object {
         $_.Name -match '^procdump(64)?\.exe$' -and
-        # ProcDump in SysInternals standard path is expected for sysadmins
-        $_.FullName -notmatch 'SysInternals|Program Files'
+        (Get-ProcDumpSeverity -FullName $_.FullName).Severity -eq 'CRITICAL'
     })
     $mimeHits = @($allFoundFiles | Where-Object {
         $_.Name -match '^(mimikatz|mimi32|mimi64|wce|fgdump|pwdump).*\.exe$'
